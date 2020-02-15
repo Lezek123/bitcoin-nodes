@@ -5,6 +5,31 @@ const
 
 const NO_HANDSHAKE_TIMEOUT = 120 * 1000;
 const NO_DATA_TIMEOUT = 3600 * 1000;
+const MAX_OPEN_CONNS = 1000;
+
+// Object containing current connections status infomation
+let connectionsStatus = {
+    open: 0,
+    handshaked: 0,
+    successful: 0,
+    failed: 0,
+}
+
+const getCurrentConnectionsStatus = () => ( {...connectionsStatus} );
+
+// Usage: await newConnectionPossible();
+const newConnectionPossible = async () => {
+    while (connectionsStatus.open >= MAX_OPEN_CONNS) {
+        await new Promise(r => setTimeout(r, 10));
+    }
+}
+
+// Usage: await noOpenConnections();
+const noOpenConnections = async () => {
+    while (connectionsStatus.open > 0) {
+        await new Promise(r => setTimeout(r, 10));
+    }
+}
 
 const fetchDataFromNode = (peerAddr) => new Promise((resolve, reject) => {
     var client = new net.Socket();
@@ -51,6 +76,7 @@ const fetchDataFromNode = (peerAddr) => new Promise((resolve, reject) => {
             }
             if (handshakeSteps === 2) {
                 ++handshakeSteps; // Avoid running this statement infinitely
+                ++connectionsStatus.handshaked;
                 // Send getaddr
                 client.write(composeMessageToNode('getaddr'));
             }
@@ -79,12 +105,12 @@ const fetchDataFromNode = (peerAddr) => new Promise((resolve, reject) => {
     }, NO_DATA_TIMEOUT);
 });
 
-const tryToConnectAndFetchAddrs = async (addr, connectionsStatus) => {
+const tryToConnectAndFetchAddrs = async (addr) => {
     let fetchedData = null;
     
     try {
         ++connectionsStatus.open;
-        fetchedData = await fetchDataFromNode(addr);
+        fetchedData = await fetchDataFromNode(addr, connectionsStatus);
         ++connectionsStatus.successful;
     } catch (e) {
         ++connectionsStatus.failed;
@@ -101,4 +127,4 @@ const tryToConnectAndFetchAddrs = async (addr, connectionsStatus) => {
     console.log('CONNECTIONS STATUS: ', connectionsStatus);
 };
 
-module.exports = { fetchDataFromNode, tryToConnectAndFetchAddrs };
+module.exports = { fetchDataFromNode, tryToConnectAndFetchAddrs, getCurrentConnectionsStatus, newConnectionPossible, noOpenConnections };
