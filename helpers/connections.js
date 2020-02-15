@@ -7,8 +7,7 @@ const NO_CONNECTION_TIMEOUT = 10 * 1000;
 const NO_HANDSHAKE_TIMEOUT = 120 * 1000;
 const NO_DATA_TIMEOUT = 3600 * 1000;
 
-const MAX_OPEN_CONNS = 1000;
-const MAX_PENDING_CONNS = 1000;
+const MAX_OPEN_CONNS = 100; // pending + open, since pending may become open
 
 // Object containing current connections status infomation
 let connectionsStatus = {
@@ -25,8 +24,7 @@ const getCurrentConnectionsStatus = () => ( {...connectionsStatus} );
 // Usage: await newConnectionPossible();
 const newConnectionPossible = async () => {
     while (
-        connectionsStatus.open >= MAX_OPEN_CONNS
-        || connectionsStatus.pending >= MAX_PENDING_CONNS
+        connectionsStatus.open + connectionsStatus.pending >= MAX_OPEN_CONNS
     ) {
         await new Promise(r => setTimeout(r, 10));
     }
@@ -131,7 +129,6 @@ const fetchDataFromNode = (peerAddr) => new Promise((resolve, reject) => {
 
 const tryToConnectAndFetchAddrs = async (addr) => {
     let fetchedData = null;
-    
     try {
         ++connectionsStatus.tried;
         ++connectionsStatus.pending;
