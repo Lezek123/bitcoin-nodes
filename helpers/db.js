@@ -7,10 +7,28 @@ mongoose.connect(config.mongoURI);
 require('../models/Node');
 const Node = mongoose.model('node');
 
+const updatePriority = async (updatedNode) => {
+    let lastSuccessfulConnTs = updatedNode.lastSuccessfulConnDate ?
+        Math.floor(updatedNode.lastSuccessfulConnDate.getTime() / 1000)
+        : 0;
+    let lastSuccessfulConnHourTs = Math.floor(lastSuccessfulConnTs / 3600);
+    let priority =
+        lastSuccessfulConnHourTs * 10000 * 10000 // First priority - last successfull connection (hour "timestamp")
+        + updatedNode.successfulConnsCount * 10000 // Second priority - successful connections count
+        + updatedNode.recievedCount; // Third priority - how many times we recieved given node address
+
+    await Node.findOneAndUpdate(
+        { address: updatedNode.address },
+        { $set: {
+            priority: priority
+        } }
+    );
+}
+
 const updateAddressesDb = async (newAddresses) => {
     for (addr of newAddresses) {
-        if (addr.address.match(/^0\.0\.0/)) continue;
-        await Node.findOneAndUpdate(
+        if (addr.address.match(/^0\./)) continue;
+        let updatedNode = await Node.findOneAndUpdate(
             { address: addr.address },
             {
                 $set: {
@@ -20,18 +38,31 @@ const updateAddressesDb = async (newAddresses) => {
                     recievedCount: 1
                 }
             },
-            { upsert: true }
+            { upsert: true, new: true }
         );
+        await updatePriority(updatedNode);
     }
 };
 
-const getAddressesBatch = async (batchNumber, batchSize) => {
-    const batch = await Node.find({})
-        .sort({ lastSuccessfulConnDate: -1, successfulConnsCount: -1, recievedCount: -1 })
-        .skip(batchNumber * batchSize)
-        .limit(batchSize);
+const getNodesToConnBatch = async (batchSize, previousBatchLastNode) => {
+    const query = previousBatchLastNode ?
+        {
+            $or: [
+                { priority: { $lt: previousBatchLastNode.priority } },
+                { priority: previousBatchLastNode.priority, address: { $lt: previousBatchLastNode.address } }
+            ]
+        }
+        :
+        {};
 
-    return batch.map(node => node.address);
+    const batch = await Node
+        .find(query)
+        .sort({ priority: -1, address: -1 })
+        .limit(batchSize)
+        .select('address priority')
+        .lean();
+
+    return batch;
 };
 
 const getNodesCount = async () => {
@@ -39,7 +70,7 @@ const getNodesCount = async () => {
 };
 
 const saveSuccessfulConnInfo = async(nodeAddr, version) => {
-    await Node.findOneAndUpdate(
+    let updatedNode = await Node.findOneAndUpdate(
         { address: nodeAddr },
         {
             $set: {
@@ -51,8 +82,11 @@ const saveSuccessfulConnInfo = async(nodeAddr, version) => {
             $inc: {
                 successfulConnsCount: 1
             }
-        }
+        },
+        { new: true }
     );
+
+    await updatePriority(updatedNode);
 };
 
 const saveFailedConnInfo = async(nodeAddr, exception) => {
@@ -70,4 +104,4 @@ const saveFailedConnInfo = async(nodeAddr, exception) => {
     );
 };
 
-module.exports = { updateAddressesDb, getAddressesBatch, getNodesCount, saveSuccessfulConnInfo, saveFailedConnInfo };
+module.exports = { updateAddressesDb, getNodesToConnBatch, getNodesCount, saveSuccessfulConnInfo, saveFailedConnInfo };

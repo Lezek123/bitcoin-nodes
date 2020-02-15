@@ -3,12 +3,17 @@ const
     { saveSuccessfulConnInfo, saveFailedConnInfo, updateAddressesDb } = require('./db'),
     { composeMessageToNode, versionMessage, parseRecievedData, parseVersionPayload, parseAddrPayload } = require('./messages');
 
+const NO_CONNECTION_TIMEOUT = 10 * 1000;
 const NO_HANDSHAKE_TIMEOUT = 120 * 1000;
 const NO_DATA_TIMEOUT = 3600 * 1000;
+
 const MAX_OPEN_CONNS = 1000;
+const MAX_PENDING_CONNS = 1000;
 
 // Object containing current connections status infomation
 let connectionsStatus = {
+    tried: 0,
+    pending: 0,
     open: 0,
     handshaked: 0,
     successful: 0,
@@ -19,7 +24,10 @@ const getCurrentConnectionsStatus = () => ( {...connectionsStatus} );
 
 // Usage: await newConnectionPossible();
 const newConnectionPossible = async () => {
-    while (connectionsStatus.open >= MAX_OPEN_CONNS) {
+    while (
+        connectionsStatus.open >= MAX_OPEN_CONNS
+        || connectionsStatus.pending >= MAX_PENDING_CONNS
+    ) {
         await new Promise(r => setTimeout(r, 10));
     }
 }
@@ -38,12 +46,16 @@ const fetchDataFromNode = (peerAddr) => new Promise((resolve, reject) => {
             buffer: Buffer.alloc(0),
             normalized: [],
             normalizedPayload: {},
-        };
-    let handshakeSteps = 0; // === 2: just handshaked, > 2 - handshaked + executing/executed post handshake actions
+        },
+        connected = false,
+        handshakeSteps = 0; // === 2: just handshaked, > 2 - handshaked + executing/executed post handshake actions
 
     let [ peerIp, peerPort ] = peerAddr.split(':');
 
     client.connect(peerPort, peerIp, function() {
+        connected = true;
+        --connectionsStatus.pending;
+        ++connectionsStatus.open;
         // Send version message
         let message = versionMessage();
         client.write(message);
@@ -52,6 +64,11 @@ const fetchDataFromNode = (peerAddr) => new Promise((resolve, reject) => {
     client.on('error', function(error) {
         client.destroy();
         reject({ timeout: false, error: error });
+    });
+
+    client.on('close', function(hasError) {
+        if (connected) --connectionsStatus.open;
+        else --connectionsStatus.pending;
     });
     
     client.on('data', function(data) {
@@ -93,6 +110,13 @@ const fetchDataFromNode = (peerAddr) => new Promise((resolve, reject) => {
 
     // TIMEOUTS:
     setTimeout(() => {
+        if (!connected) {
+            client.destroy();
+            reject({ timeout: true, msg: `Timeout - no connections after ${ NO_CONNECTION_TIMEOUT } ms` });
+        }
+    }, NO_CONNECTION_TIMEOUT);
+
+    setTimeout(() => {
         if (handshakeSteps < 2) {
             client.destroy();
             reject({ timeout: true, msg: `Timeout - no handshake after ${ NO_HANDSHAKE_TIMEOUT } ms` });
@@ -109,15 +133,14 @@ const tryToConnectAndFetchAddrs = async (addr) => {
     let fetchedData = null;
     
     try {
-        ++connectionsStatus.open;
+        ++connectionsStatus.tried;
+        ++connectionsStatus.pending;
         fetchedData = await fetchDataFromNode(addr, connectionsStatus);
         ++connectionsStatus.successful;
     } catch (e) {
         ++connectionsStatus.failed;
         await saveFailedConnInfo(addr, e);
     }
-
-    --connectionsStatus.open;
 
     if (fetchedData) {
         await saveSuccessfulConnInfo(addr, fetchedData.version);
